@@ -1,27 +1,14 @@
-"""
-CORFO Web Scraper
-----------------
-Scraper para extraer información de convocatorias desde el sitio web de CORFO.
-Extrae datos de convocatorias abiertas y cerradas, guardando los resultados en CSV.
-
-Author: mlorca
-License: MIT
-Version: 1.0.0
-"""
-
-import logging
-from datetime import datetime
-import os
-import time
-from typing import Dict, List, Optional, Any
-
-import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from bs4 import BeautifulSoup
+import pandas as pd
+import time
+import os
+import logging
+from datetime import datetime
 
 # Configuración del logging
 logging.basicConfig(
@@ -29,26 +16,30 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-class WebDriverManager:
-    """Gestiona la configuración y ciclo de vida del WebDriver."""
-    
-    def __init__(self, page_load_timeout: int = 180, script_timeout: int = 180):
-        self.page_load_timeout = page_load_timeout
-        self.script_timeout = script_timeout
+class CorfoScraper:
+    def __init__(self):
+        self.base_url = "https://corfo.cl/sites/cpp/programasyconvocatorias"
         self.driver = None
         self.wait = None
+        self.csv_filename = "corfo_convocatorias.csv"
+        self.df_existing = None
+        self.current_page_convocatorias = []
+        self.total_nuevas = 0
+        self.max_retries = 3
+        self.page_load_timeout = 180
+        self.script_timeout = 180
 
-    def setup(self) -> None:
-        """Configura una nueva instancia del WebDriver."""
+    def setup_driver(self):
+        """Configura el driver de Selenium con Chrome"""
         options = webdriver.ChromeOptions()
         options.add_argument('--headless')
         options.add_argument('--disable-gpu')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--window-size=1920,1080')
-        options.add_argument('--disable-features=NetworkService')
+        options.add_argument('--disable-features=NetworkService')  # Ayuda con problemas de timeout
         options.add_argument('--disable-features=VizDisplayCompositor')
-        options.page_load_strategy = 'eager'
+        options.page_load_strategy = 'eager'  # Carga más rápida
         
         self.driver = webdriver.Chrome(options=options)
         self.driver.set_page_load_timeout(self.page_load_timeout)
@@ -56,54 +47,52 @@ class WebDriverManager:
         self.wait = WebDriverWait(self.driver, 20)
         self.driver.implicitly_wait(10)
 
-    def quit(self) -> None:
-        """Cierra el WebDriver de manera segura."""
+    def retry_on_timeout(self, func, *args, **kwargs):
+        """Reintenta una función en caso de timeout"""
+        for attempt in range(self.max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                if attempt == self.max_retries - 1:  # Si es el último intento
+                    raise e
+                logging.warning(f"Intento {attempt + 1} falló: {str(e)}. Reintentando...")
+                time.sleep(5)  # Esperar antes de reintentar
+                
+                # Si es un error de timeout, reiniciar el driver
+                if "timeout" in str(e).lower():
+                    logging.info("Reiniciando el driver debido a timeout...")
+                    self.restart_driver()
+
+    def restart_driver(self):
+        """Reinicia el driver en caso de problemas"""
         try:
             if self.driver:
                 self.driver.quit()
-        except Exception as e:
-            logging.error(f"Error cerrando WebDriver: {e}")
+        except:
+            pass
         finally:
-            self.driver = None
-            self.wait = None
+            self.setup_driver()
 
-    def restart(self) -> None:
-        """Reinicia el WebDriver."""
-        self.quit()
-        self.setup()
-
-class CorfoScraper:
-    """Scraper principal para el sitio web de CORFO."""
-
-    def __init__(self, csv_filename: str = "corfo_convocatorias.csv"):
-        self.base_url = "https://corfo.cl/sites/cpp/programasyconvocatorias"
-        self.csv_filename = csv_filename
-        self.driver_manager = WebDriverManager()
-        self.df_existing = pd.DataFrame()
-        self.total_nuevas = 0
-        self.max_retries = 3
-
-    def _wait_and_find_element(self, by: By, value: str, timeout: int = 20) -> Optional[Any]:
-        """Espera y encuentra un elemento en la página."""
+    def wait_for_element(self, by, value, timeout=20):
+        """Espera a que un elemento esté presente y visible"""
         try:
-            element = WebDriverWait(self.driver_manager.driver, timeout).until(
+            element = WebDriverWait(self.driver, timeout).until(
                 EC.presence_of_element_located((by, value))
             )
-            self.driver_manager.driver.execute_script("arguments[0].scrollIntoView(true);", element)
+            self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
             time.sleep(1)
             return element
         except TimeoutException:
             logging.error(f"Timeout esperando elemento {value}")
             return None
 
-    def _clean_html(self, html_content: str) -> str:
-        """Limpia el contenido HTML de elementos no deseados."""
+    def clean_resumen(self, html_content):
+        """Limpia el contenido del resumen según las reglas especificadas"""
         if not html_content:
             return "No disponible"
             
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Eliminar elementos específicos
         for span in soup.find_all('span', style="border: 2px solid #2fca70;padding: 20px;display: inline-block;"):
             if "Plataforma Matchmaking" in span.text:
                 span.decompose()
@@ -111,172 +100,319 @@ class CorfoScraper:
         for a in soup.find_all('a'):
             a.decompose()
         
-        text = soup.get_text().replace('<br> " -', '').replace('" -', '')
+        text = soup.get_text()
+        text = text.replace('<br> " -', '')
+        text = text.replace('" -', '')
+        
         return text.strip() or "No disponible"
 
-    def _extract_convocatoria_data(self, caja: Any) -> Optional[Dict[str, str]]:
-        """Extrae datos de una convocatoria individual."""
+    def get_existing_data(self):
+        """Lee el archivo CSV existente si existe"""
+        if os.path.exists(self.csv_filename):
+            try:
+                return pd.read_csv(self.csv_filename)
+            except Exception as e:
+                logging.error(f"Error leyendo CSV existente: {e}")
+                return pd.DataFrame()
+        return pd.DataFrame()
+
+    def parse_convocatoria(self, caja):
+        """Extrae la información de una convocatoria individual"""
         try:
             data = {
-                'NOMBRE': caja.find_element(By.CLASS_NAME, "titulo-cajas_fechas").text.strip(),
-                'APERTURA': caja.find_element(By.CSS_SELECTOR, ".apertura span").text.strip(),
-                'CIERRE': caja.find_element(By.CSS_SELECTOR, ".cierre span").text.strip(),
+                'NOMBRE': '',
+                'APERTURA': '',
+                'CIERRE': '',
                 'ALCANCE': 'No especificado',
                 'ESTADO': 'No especificado',
                 'RESUMEN': 'No disponible',
                 'URL': 'No disponible'
             }
-
+            
+            data['NOMBRE'] = caja.find_element(By.CLASS_NAME, "titulo-cajas_fechas").text.strip()
+            
+            # Obtener fechas directamente del span
             try:
-                data['ALCANCE'] = caja.find_element(
-                    By.XPATH, ".//*[contains(text(), 'Alcance:')]"
-                ).text.replace("Alcance:", "").strip()
+                apertura_span = caja.find_element(By.CSS_SELECTOR, ".apertura span")
+                data['APERTURA'] = apertura_span.text.strip()
             except NoSuchElementException:
-                pass
-
+                logging.debug(f"No se encontró fecha de apertura para {data['NOMBRE']}")
+                data['APERTURA'] = "No disponible"
+            
             try:
-                data['ESTADO'] = caja.find_element(
-                    By.XPATH, ".//*[contains(text(), 'Estado:')]"
-                ).text.replace("Estado:", "").strip()
+                cierre_span = caja.find_element(By.CSS_SELECTOR, ".cierre span")
+                data['CIERRE'] = cierre_span.text.strip()
             except NoSuchElementException:
-                pass
-
+                logging.debug(f"No se encontró fecha de cierre para {data['NOMBRE']}")
+                data['CIERRE'] = "No disponible"
+            
             try:
-                data['RESUMEN'] = self._clean_html(
-                    caja.find_element(By.TAG_NAME, "p").get_attribute('innerHTML')
-                )
+                alcance_elem = caja.find_element(By.XPATH, ".//*[contains(text(), 'Alcance:')]")
+                data['ALCANCE'] = alcance_elem.text.replace("Alcance:", "").strip()
             except NoSuchElementException:
-                pass
-
+                logging.debug(f"No se encontró alcance para {data['NOMBRE']}")
+            
+            try:
+                estado_elem = caja.find_element(By.XPATH, ".//*[contains(text(), 'Estado:')]")
+                data['ESTADO'] = estado_elem.text.replace("Estado:", "").strip()
+            except NoSuchElementException:
+                logging.debug(f"No se encontró estado para {data['NOMBRE']}")
+            
+            try:
+                resumen_elem = caja.find_element(By.TAG_NAME, "p")
+                data['RESUMEN'] = self.clean_resumen(resumen_elem.get_attribute('innerHTML'))
+            except NoSuchElementException:
+                logging.debug(f"No se encontró resumen para {data['NOMBRE']}")
+            
             try:
                 url_elem = caja.find_element(By.CSS_SELECTOR, ".foot-caja_result a")
                 url = url_elem.get_attribute("href")
                 data['URL'] = f"https://corfo.cl{url}" if not url.startswith("https://corfo.cl") else url
             except NoSuchElementException:
-                pass
-
+                logging.debug(f"No se encontró URL para {data['NOMBRE']}")
+            
             return data
+
         except Exception as e:
-            logging.error(f"Error extrayendo datos de convocatoria: {e}")
+            logging.error(f"Error parseando convocatoria: {e}")
             return None
 
-    def _check_next_page(self) -> bool:
-        """Verifica si existe y hace clic en el botón 'Siguiente'."""
+    def check_next_page(self):
+        """Verifica si existe el botón 'Siguiente' y hace clic en él"""
         try:
-            next_button = self._wait_and_find_element(
-                By.XPATH,
-                "//li[@class='page-item']/a[@class='page-link' and contains(text(), 'Siguiente')]"
+            next_button = WebDriverWait(self.driver, 5).until(
+                EC.presence_of_element_located((
+                    By.XPATH,
+                    "//li[@class='page-item']/a[@class='page-link' and contains(text(), 'Siguiente')]"
+                ))
             )
-            if next_button:
-                next_button.click()
-                time.sleep(2)
-                return True
-            return False
-        except Exception:
+            
+            self.driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
+            time.sleep(1)
+            next_button.click()
+            time.sleep(2)
+            return True
+        except (NoSuchElementException, TimeoutException):
             return False
 
-    def _ensure_filter_visible(self) -> None:
-        """Asegura que el filtro de Estado esté visible."""
+    def ensure_filter_visible(self):
+        """Asegura que el filtro de Estado esté visible"""
         try:
-            accordion = self._wait_and_find_element(
-                By.CSS_SELECTOR, 
-                "button.accordion-button.collapsed"
-            )
-            if accordion:
-                accordion.click()
+            # Verificar si el acordeón está colapsado
+            accordion = self.wait_for_element(By.ID, "collapse1")
+            if not "show" in accordion.get_attribute("class"):
+                # Click en el encabezado para expandir
+                heading = self.driver.find_element(By.ID, "heading1")
+                heading.click()
                 time.sleep(1)
+            return True
         except Exception as e:
-            logging.error(f"Error al expandir filtros: {e}")
+            logging.error(f"Error asegurando visibilidad del filtro: {e}")
+            return False
 
-    def _load_existing_data(self) -> None:
-        """Carga datos existentes del CSV si existe."""
-        if os.path.exists(self.csv_filename):
+    def apply_filters(self):
+        """Aplica los filtros de estado (Abiertas y Cerradas)"""
+        try:
+            # Asegurar que el filtro esté visible
+            if not self.ensure_filter_visible():
+                return False
+
+            # Marcar checkbox de convocatorias cerradas (Abiertas ya está marcado por defecto)
+            logging.info("Configurando filtros de estado...")
+            
+            # Asegurar que 'Abiertas' esté marcado
+            checkbox_abierta = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.ID, "pullEstado-abierta-checkbox"))
+            )
+            if not checkbox_abierta.is_selected():
+                self.driver.execute_script("arguments[0].scrollIntoView(true);", checkbox_abierta)
+                time.sleep(1)
+                self.driver.execute_script("arguments[0].click();", checkbox_abierta)
+                logging.info("Checkbox 'Abiertas' marcado")
+                time.sleep(1)
+
+            # Marcar 'Cerradas'
+            checkbox_cerrada = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.ID, "pullEstado-cerrada-checkbox"))
+            )
+            if not checkbox_cerrada.is_selected():
+                self.driver.execute_script("arguments[0].scrollIntoView(true);", checkbox_cerrada)
+                time.sleep(1)
+                self.driver.execute_script("arguments[0].click();", checkbox_cerrada)
+                logging.info("Checkbox 'Cerradas' marcado")
+                time.sleep(1)
+
+            # Hacer click en el botón "Aplicar filtros"
+            logging.info("Aplicando filtros...")
             try:
-                self.df_existing = pd.read_csv(self.csv_filename)
-                logging.info(f"Datos existentes cargados: {len(self.df_existing)} registros")
-            except Exception as e:
-                logging.error(f"Error al cargar CSV existente: {e}")
-                self.df_existing = pd.DataFrame()
-
-    def _save_data(self, convocatorias: List[Dict[str, str]]) -> None:
-        """Guarda los datos en CSV."""
-        try:
-            df_new = pd.DataFrame(convocatorias)
-            
-            if not self.df_existing.empty:
-                # Combinar datos nuevos con existentes
-                df_combined = pd.concat([self.df_existing, df_new], ignore_index=True)
-                # Eliminar duplicados basados en NOMBRE y URL
-                df_combined = df_combined.drop_duplicates(subset=['NOMBRE', 'URL'], keep='last')
-                df_combined.to_csv(self.csv_filename, index=False)
-                self.total_nuevas = len(df_combined) - len(self.df_existing)
-            else:
-                df_new.to_csv(self.csv_filename, index=False)
-                self.total_nuevas = len(df_new)
-                
-            logging.info(f"Se agregaron {self.total_nuevas} nuevas convocatorias")
+                # Buscar y hacer click en el botón de aplicar filtros
+                apply_button = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "button.cpp-button-search"))
+                )
+                self.driver.execute_script("arguments[0].click();", apply_button)
+                logging.info("Filtros aplicados exitosamente")
+                time.sleep(3)  # Esperar a que se apliquen los filtros y se carguen los resultados
+                return True
+            except NoSuchElementException:
+                logging.error("No se pudo encontrar el botón 'Aplicar filtros'")
+                return False
             
         except Exception as e:
-            logging.error(f"Error al guardar datos: {e}")
-            raise
+            logging.error(f"Error aplicando filtros: {e}")
+            return False
 
-    def scrape(self) -> None:
-        """Ejecuta el proceso de scraping."""
-        convocatorias = []
+    def update_csv_with_page_data(self, pagina):
+        """Actualiza el CSV con los datos de la página actual"""
+        if not self.current_page_convocatorias:
+            logging.info("No se encontraron convocatorias en esta página")
+            return 0
         
-        try:
-            self.driver_manager.setup()
-            self.driver_manager.driver.get(self.base_url)
+        # Crear DataFrame con convocatorias de la página actual
+        df_page = pd.DataFrame(self.current_page_convocatorias)
+        nuevas_convocatorias = len(df_page)
+        
+        if not self.df_existing.empty:
+            # Verificar duplicados basados en URL
+            existing_urls = set(self.df_existing['URL'].tolist())
+            df_page = df_page[~df_page['URL'].isin(existing_urls)]
+            nuevas_convocatorias = len(df_page)
+        
+        if nuevas_convocatorias > 0:
+            # Agregar IDs a las nuevas convocatorias
+            last_id = 0 if self.df_existing.empty else self.df_existing['ID'].max()
+            df_page.insert(0, 'ID', range(last_id + 1, last_id + 1 + len(df_page)))
             
-            # Expandir filtros si es necesario
-            self._ensure_filter_visible()
+            # Concatenar con las convocatorias existentes (nuevas al final)
+            if self.df_existing.empty:
+                self.df_existing = df_page
+            else:
+                self.df_existing = pd.concat([self.df_existing, df_page], ignore_index=True)
+            
+            # Guardar el DataFrame actualizado
+            self.df_existing.to_csv(self.csv_filename, index=False, encoding='utf-8-sig')
+            
+            # Reportar nuevas convocatorias
+            logging.info(f"\nPágina {pagina}: Se agregaron {nuevas_convocatorias} nuevas convocatorias:")
+            for _, conv in df_page.iterrows():
+                logging.info(f"- {conv['NOMBRE']}")
+                logging.info(f"  Apertura: {conv['APERTURA']}")
+                logging.info(f"  Cierre: {conv['CIERRE']}")
+                logging.info(f"  Estado: {conv['ESTADO']}")
+                logging.info(f"  URL: {conv['URL']}\n")
+        
+        # Limpiar lista de convocatorias de la página
+        self.current_page_convocatorias = []
+        return nuevas_convocatorias
+
+    def scrape_page(self, pagina):
+        """Realiza el scraping de la página actual"""
+        def _scrape():
+            logging.info("Esperando que se cargue el listado...")
+            WebDriverWait(self.driver, 20).until(
+                EC.presence_of_element_located((By.ID, "listSearch"))
+            )
+
+            # Aplicar filtros solo en la primera página
+            if pagina == 1:
+                if not self.apply_filters():
+                    return False
+
+            logging.info("Esperando que se carguen las cajas de resultados...")
+            cajas = WebDriverWait(self.driver, 20).until(
+                EC.presence_of_all_elements_located((By.CLASS_NAME, "caja-resultados_uno"))
+            )
+            
+            logging.info(f"Procesando {len(cajas)} convocatorias encontradas...")
+            self.current_page_convocatorias = []
+            for caja in cajas:
+                convocatoria = self.parse_convocatoria(caja)
+                if convocatoria:
+                    self.current_page_convocatorias.append(convocatoria)
+            
+            # Actualizar CSV con los datos de esta página
+            nuevas = self.update_csv_with_page_data(pagina)
+            self.total_nuevas += nuevas
+            
+            return True
+
+        try:
+            return self.retry_on_timeout(_scrape)
+        except Exception as e:
+            logging.error(f"Error en scrape_page: {e}")
+            return False
+
+    def check_duplicates(self):
+        """Verifica si hay duplicados potenciales"""
+        if not os.path.exists(self.csv_filename):
+            return False
+            
+        try:
+            # Obtener primera página sin procesar completamente
+            self.driver.get(self.base_url)
+            WebDriverWait(self.driver, 20).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "caja-resultados_uno"))
+            )
+            
+            primera_convocatoria = self.driver.find_element(
+                By.CLASS_NAME, "titulo-cajas_fechas"
+            ).text.strip()
+            
+            # Verificar si existe en el CSV
+            df = pd.read_csv(self.csv_filename)
+            return primera_convocatoria in df['NOMBRE'].values
+            
+        except Exception as e:
+            logging.error(f"Error verificando duplicados: {e}")
+            return False
+
+    def run(self):
+        """Ejecuta el proceso completo de scraping"""
+        try:
+            self.setup_driver()
+            
+            # Verificar duplicados solo si existe el archivo
+            if self.check_duplicates():
+                respuesta = input("Se encontraron convocatorias que ya existen en la base de datos. ¿Desea continuar? (s/n): ")
+                if respuesta.lower() != 's':
+                    logging.info("Operación cancelada por el usuario")
+                    return
+            
+            # Cargar datos existentes
+            self.df_existing = self.get_existing_data()
+            
+            # Iniciar scraping
+            self.driver.get(self.base_url)
+            pagina = 1
             
             while True:
-                # Esperar a que las cajas de convocatorias estén presentes
-                cajas = self._wait_and_find_element(
-                    By.CLASS_NAME, "caja-resultado"
-                )
-                if not cajas:
+                logging.info(f"\nProcesando página {pagina}...")
+                try:
+                    if not self.scrape_page(pagina):
+                        break
+                    
+                    if not self.check_next_page():
+                        logging.info("No hay más páginas para procesar")
+                        break
+                        
+                    pagina += 1
+                except Exception as e:
+                    logging.error(f"Error procesando página {pagina}: {e}")
+                    if "timeout" in str(e).lower():
+                        logging.info("Intentando reiniciar el driver y continuar...")
+                        self.restart_driver()
+                        self.driver.get(self.base_url)
+                        continue
                     break
-                
-                # Extraer datos de cada caja
-                cajas = self.driver_manager.driver.find_elements(By.CLASS_NAME, "caja-resultado")
-                for caja in cajas:
-                    data = self._extract_convocatoria_data(caja)
-                    if data:
-                        convocatorias.append(data)
-                
-                # Verificar siguiente página
-                if not self._check_next_page():
-                    break
             
-            return convocatorias
+            logging.info(f"\nProceso completado. Total de nuevas convocatorias agregadas: {self.total_nuevas}")
             
-        except Exception as e:
-            logging.error(f"Error durante el scraping: {e}")
-            raise
-        finally:
-            self.driver_manager.quit()
-
-    def run(self) -> None:
-        """Ejecuta el proceso completo de scraping."""
-        try:
-            logging.info("Iniciando scraping de convocatorias CORFO...")
-            self._load_existing_data()
-            
-            convocatorias = self.scrape()
-            if convocatorias:
-                self._save_data(convocatorias)
-                logging.info("Proceso completado exitosamente")
-            else:
-                logging.warning("No se encontraron convocatorias")
-                
         except Exception as e:
             logging.error(f"Error durante la ejecución: {e}")
-            raise
+        finally:
+            if self.driver:
+                self.driver.quit()
 
 def main():
-    """Función principal."""
     scraper = CorfoScraper()
     scraper.run()
 
