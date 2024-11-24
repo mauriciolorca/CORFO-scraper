@@ -1,132 +1,133 @@
 # CORFO Web Scraper
 
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+Este proyecto proporciona un conjunto de herramientas para extraer y analizar información de los programas y convocatorias de CORFO (Corporación de Fomento de la Producción de Chile).
 
-Un scraper robusto y eficiente para extraer información de convocatorias desde el sitio web de CORFO (Corporación de Fomento de la Producción).
+## Descripción
 
-## Características
+El proyecto consta de tres scripts principales que trabajan en secuencia para recopilar información detallada de las convocatorias de CORFO:
 
-- Extracción automática de convocatorias abiertas y cerradas
-- Manejo robusto de errores y reintentos
-- Sistema de logging detallado
-- Prevención de duplicados
-- Almacenamiento en CSV con IDs únicos
-- Manejo eficiente de recursos del navegador
-- Documentación completa
+1. `corfo_scraper_lista_b01.py`: Extrae el listado completo de convocatorias
+2. `corfo_scraper_filtros_b01.py`: Enriquece los datos con información de filtros
+3. `corfo_detalle_scraper_b01.py`: Obtiene información detallada de cada convocatoria
 
-## Datos Extraídos
+## Requisitos
 
-Para cada convocatoria, el scraper extrae:
-- ID único
-- Nombre de la convocatoria
-- Fecha de apertura
-- Fecha de cierre
-- Alcance
-- Estado
-- Resumen
-- URL
+- Python 3.8+
+- Chrome/Chromium Browser
+- Dependencias de Python (ver `requirements.txt`)
 
 ## Instalación
 
-1. Clona el repositorio:
+1. Clonar el repositorio:
 ```bash
-git clone https://github.com/[tu-usuario]/corfo-scraper.git
-cd corfo-scraper
+git clone https://github.com/mauriciolorca/CORFO-scraper.git
+cd CORFO-scraper
 ```
 
-2. Crea un entorno virtual (recomendado):
+2. Crear y activar entorno virtual:
 ```bash
 python -m venv venv
 source venv/bin/activate  # En Linux/Mac
 venv\Scripts\activate     # En Windows
 ```
 
-3. Instala las dependencias:
+3. Instalar dependencias:
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Uso
 
-Para ejecutar el scraper:
+### 1. Extracción de Lista Base (`corfo_scraper_lista_b01.py`)
+
+Este script extrae el listado completo de convocatorias abiertas y cerradas.
 
 ```bash
-python corfo_scraper.py
+python corfo_scraper_lista_b01.py
 ```
 
-Los resultados se guardarán en `corfo_convocatorias.csv` en el directorio actual.
+- **Entrada**: Ninguna
+- **Salida**: `corfo_convocatorias.csv`
+- **Funcionalidad**:
+  - Navega por todas las páginas de convocatorias
+  - Extrae información básica de cada convocatoria
+  - Guarda datos incrementalmente
 
-## Estructura del Proyecto
+### 2. Enriquecimiento con Filtros (`corfo_scraper_filtros_b01.py`)
+
+Analiza las convocatorias a través de 15 filtros diferentes y enriquece la información.
+
+```bash
+python corfo_scraper_filtros_b01.py
+```
+
+- **Entrada**: `corfo_convocatorias.csv`
+- **Salida**: `corfo_convocatorias_enriched.csv`
+- **Filtros procesados**:
+  - Perfiles: Persona, Empresa, Organización, Intermediario, Institución, Extranjero
+  - Etapas: Emprender, Idea de Negocio, Aumentar Ventas, Escalar, Innovar, I+D, Servicios, Ecosistema Emprendimiento
+
+### 3. Extracción de Detalles (`corfo_detalle_scraper_b01.py`)
+
+Obtiene información detallada de cada convocatoria accediendo a sus fichas individuales.
+
+```bash
+python corfo_detalle_scraper_b01.py
+```
+
+- **Entrada**: `corfo_convocatorias_enriched.csv`
+- **Salida**: `corfo_convocatorias_full.csv`
+- **Información extraída**:
+  - Detalles del programa
+  - Beneficios
+  - Requisitos
+  - Resultados esperados
+
+## Estructura de Archivos
 
 ```
-corfo-scraper/
-│
-├── corfo_scraper.py     # Script principal
-├── requirements.txt     # Dependencias del proyecto
-├── LICENSE             # Licencia MIT
-├── README.md          # Este archivo
-└── .gitignore        # Archivos ignorados por git
+CORFO-scraper/
+├── README.md
+├── requirements.txt
+├── corfo_scraper_lista_b01.py
+├── corfo_scraper_filtros_b01.py
+├── corfo_detalle_scraper_b01.py
+└── docs/
+    ├── LISTA_SCRAPER.md
+    ├── FILTROS_SCRAPER.md
+    └── DETALLE_SCRAPER.md
 ```
 
-## Detalles Técnicos
+## Documentación Detallada
 
-### Componentes Principales
+Para información más detallada sobre cada script, consulte los archivos en la carpeta `docs/`:
 
-1. **WebDriverManager**: Gestiona el ciclo de vida del navegador Chrome
-   - Configuración automática
-   - Manejo de recursos
-   - Reinicio automático en caso de problemas
+- [Documentación del Scraper de Lista](docs/LISTA_SCRAPER.md)
+- [Documentación del Scraper de Filtros](docs/FILTROS_SCRAPER.md)
+- [Documentación del Scraper de Detalles](docs/DETALLE_SCRAPER.md)
 
-2. **CorfoScraper**: Clase principal del scraper
-   - Extracción de datos
-   - Manejo de paginación
-   - Gestión de CSV
-   - Sistema de logging
+## Manejo de Errores
 
-### Manejo de Errores
-
-- Reintentos automáticos en caso de timeout
-- Logging detallado de errores
-- Recuperación automática de fallos
-- Preservación de datos en caso de error
-
-## Logs
-
-El scraper genera logs detallados con:
-- Progreso del scraping
-- Nuevas convocatorias encontradas
-- Errores y advertencias
-- Estadísticas de ejecución
+Cada script incluye:
+- Logging detallado
+- Guardado incremental de datos
+- Recuperación de errores
+- Timeouts configurables
 
 ## Contribuir
 
-1. Fork el proyecto
-2. Crea tu rama de características (`git checkout -b feature/AmazingFeature`)
-3. Commit tus cambios (`git commit -m 'Add: nueva característica'`)
+1. Fork el repositorio
+2. Cree una rama para su característica (`git checkout -b feature/AmazingFeature`)
+3. Commit sus cambios (`git commit -m 'Add some AmazingFeature'`)
 4. Push a la rama (`git push origin feature/AmazingFeature`)
-5. Abre un Pull Request
+5. Abra un Pull Request
 
 ## Licencia
 
-Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para detalles.
-
-## Notas Importantes
-
-- Respetar los términos de uso del sitio web de CORFO
-- Mantener un intervalo razonable entre ejecuciones
-- Verificar cambios en la estructura del sitio web
-
-## Mantenimiento
-
-Para mantener el scraper funcionando correctamente:
-1. Revisar periódicamente cambios en el sitio web
-2. Actualizar las dependencias
-3. Verificar los selectores CSS/XPath
-4. Monitorear los logs en busca de errores
+Este proyecto está bajo la Licencia MIT - vea el archivo [LICENSE](LICENSE) para detalles.
 
 ## Contacto
 
-[Tu Nombre] - [tu@email.com]
+Mauricio Lorca - [@mauriciolorca](https://github.com/mauriciolorca)
 
-Link del proyecto: [https://github.com/[tu-usuario]/corfo-scraper](https://github.com/[tu-usuario]/corfo-scraper)
+Link del proyecto: [https://github.com/mauriciolorca/CORFO-scraper](https://github.com/mauriciolorca/CORFO-scraper)

@@ -22,30 +22,25 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 ENV/
-env/
-env.bak/
-venv.bak/
 
 # IDEs
 .idea/
 .vscode/
 *.swp
 *.swo
-*~
 
 # Logs
 *.log
-logs/
-log/
 
-# Data files
+# Local data files
 *.csv
-!example_data.csv
+!requirements.txt
 
-# Chrome Driver
-chromedriver*
+# Environment variables
+.env
 
-# OS specific
+# Operating System
 .DS_Store
 Thumbs.db
